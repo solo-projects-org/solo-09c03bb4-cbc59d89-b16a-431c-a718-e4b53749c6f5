@@ -1,0 +1,22 @@
+services:
+  settle-web:
+    build: .
+    image: bus-transfer-settle:latest
+    container_name: bus-transfer-settle
+    ports:
+      - "8000:8000"
+    volumes:
+      - settle-data:/data
+    environment:
+      SETTLE_DB: /data/settle.db
+      SETTLE_PACKAGES: /data/packages
+      SETTLE_SECRET: change-me-in-production
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/').status==200 else 1)"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+volumes:
+  settle-data:

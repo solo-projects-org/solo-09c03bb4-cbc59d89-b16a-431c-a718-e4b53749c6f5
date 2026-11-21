@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>公交换乘优惠 · 单期月结清分</title>
+<style>
+  body { font-family: "PingFang SC", "Microsoft YaHei", sans-serif; margin: 24px; color: #222; }
+  h1 { font-size: 20px; } h2 { font-size: 16px; margin-top: 28px; }
+  table { border-collapse: collapse; margin: 8px 0; }
+  th, td { border: 1px solid #bbb; padding: 5px 10px; font-size: 13px; }
+  th { background: #f2f4f7; }
+  .flash { padding: 8px 12px; margin: 6px 0; border-radius: 4px; font-size: 13px; }
+  .flash.error { background: #fdecea; border: 1px solid #e5a4a0; }
+  .flash.ok { background: #edf7ed; border: 1px solid #9ec99e; }
+  .flash.info { background: #eef3fb; border: 1px solid #a9c1e3; }
+  form.inline { display: inline; }
+  .muted { color: #777; font-size: 12px; }
+  .tag { padding: 1px 7px; border-radius: 10px; font-size: 12px; }
+  .running { background: #fff4d6; } .ready { background: #d9f2df; }
+  .failed { background: #fbdcdc; }
+  input, select { padding: 5px; margin: 2px 6px 2px 0; font-size: 13px; }
+  .box { border: 1px solid #ddd; border-radius: 6px; padding: 14px 18px; margin-bottom: 16px; }
+</style>
+</head>
+<body>
+<h1>公交换乘优惠 · 单期月结清分台</h1>
+
+{% with messages = get_flashed_messages(with_categories=true) %}
+  {% for cat, msg in messages %}
+    <div class="flash {{ cat }}">{{ msg }}</div>
+  {% endfor %}
+{% endwith %}
+
+<div class="box">
+<h2>① 收件登记（上传对方所需的刷卡流水 CSV 原档）</h2>
+<form method="post" action="{{ url_for('main.upload') }}" enctype="multipart/form-data">
+  <label>公司
+    <select name="company">
+      {% for c in companies %}<option value="{{ c }}">{{ c }} · {{ labels[c] }}</option>{% endfor %}
+    </select>
+  </label>
+  <label>批号（从 1 起编）<input name="batch_no" type="number" min="1" required></label>
+  <label>本批引用对方最高批号（没用填 0）<input name="max_other_ref" type="number" min="0" value="0" required></label>
+  <label>CSV 原档<input type="file" name="csv_file" accept=".csv" required></label>
+  <button type="submit">上传收件</button>
+</form>
+<p class="muted">允许乱序到件；原样重传（同号同引用同内容）幂等只收一次；同号改原档或改引用一律退回。</p>
+</div>
+
+<div class="box">
+<h2>② 当前纳入状态</h2>
+<p>能同时成立的最靠后批号对：
+  <b>A（甲公司）纳入到第 {{ pair[0] }} 批</b> ／
+  <b>B（乙公司）纳入到第 {{ pair[1] }} 批</b>
+</p>
+<table>
+<tr><th>公司</th><th>已收件数</th><th>从 1 连续到</th><th>本次可纳入到</th><th>还缺哪些原档</th><th>已到但乱序（待补齐）</th></tr>
+{% for g in gaps %}
+<tr>
+  <td>{{ g.company }} · {{ g.label }}</td>
+  <td>{{ g.total_received }}</td>
+  <td>{{ g.contiguous_to }}</td>
+  <td>{{ g.included_to }}</td>
+  <td>
+    {% if g.missing_next is none %}暂无断点{% else %}缺第 {{ g.missing_next }} 批（及之后）{% endif %}
+  </td>
+  <td>{% if g.out_of_order %}{{ g.out_of_order|join("、") }}{% else %}—{% endif %}</td>
+</tr>
+{% endfor %}
+</table>
+
+<h2>已收原档明细</h2>
+<table>
+<tr><th>公司</th><th>批号</th><th>引用对方最高批</th><th>原始文件名</th><th>大小(字节)</th><th>SHA-256 前 12 位</th><th>收件时间(UTC)</th></tr>
+{% for r in rows %}
+<tr>
+  <td>{{ r.company }}</td><td>{{ r.batch_no }}</td><td>{{ r.max_other_ref }}</td>
+  <td>{{ r.file_name }}</td><td>{{ r.file_size }}</td>
+  <td>{{ r.file_sha256[:12] }}</td><td>{{ r.received_at }}</td>
+</tr>
+{% else %}
+<tr><td colspan="7" class="muted">尚未收到任何原档</td></tr>
+{% endfor %}
+</table>
+</div>
+
+<div class="box">
+<h2>③ 出包（ZIP 附原始 CSV 与批号清单）</h2>
+<form class="inline" method="post" action="{{ url_for('main.start_package') }}">
+  <button type="submit">开始打包</button>
+</form>
+<span class="muted">以点击开始时已收的原档快照为准，打包期间照常收件、互不影响；完整生成后才提供下载。</span>
+
+<h2>打包任务（最近 10 次）</h2>
+<table>
+<tr><th>#</th><th>状态</th><th>开始</th><th>结束</th><th>批号对</th><th>ZIP</th><th>操作</th></tr>
+{% for run in runs %}
+<tr>
+  <td>{{ run.id }}</td>
+  <td><span class="tag {{ run.status }}">{{ run.status }}</span></td>
+  <td>{{ run.started_at }}</td><td>{{ run.finished_at or '—' }}</td>
+  <td>
+    {% if run.pair_a is not none %}A={{ run.pair_a }} / B={{ run.pair_b }}{% else %}—{% endif %}
+  </td>
+  <td>
+    {% if run.status == 'ready' %}
+      <a href="{{ url_for('main.download', run_id=run.id) }}">下载 {{ run.file_name }}</a>
+      <div class="muted">{{ run.zip_size }} 字节 · {{ run.zip_sha256[:12] }}</div>
+    {% elif run.status == 'failed' %}
+      <span class="flash error" style="display:inline-block">{{ run.error }}</span>
+    {% else %}
+      生成中…
+    {% endif %}
+  </td>
+  <td>
+    {% if run.status == 'failed' %}
+    <form class="inline" method="post" action="{{ url_for('main.retry_package', run_id=run.id) }}">
+      <button type="submit">用已收原档重试</button>
+    </form>
+    {% endif %}
+  </td>
+</tr>
+{% else %}
+<tr><td colspan="7" class="muted">还没有打包任务</td></tr>
+{% endfor %}
+</table>
+</div>
+</body>
+</html>
